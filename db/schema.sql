@@ -29,6 +29,7 @@ CREATE TABLE user_org_membership (
 CREATE TABLE documents (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     org_id bigint NOT NULL REFERENCES organizations(id),
+    uploaded_by bigint NOT NULL REFERENCES users(id),
     filename varchar(255) NOT NULL,
     mime_type varchar(100) NOT NULL,
     filesize bigint NOT NULL,
