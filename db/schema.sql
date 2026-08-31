@@ -45,6 +45,17 @@ CREATE TABLE document_chunks (
     created_at timestamptz NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE sessions (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash text NOT NULL,
+    expires_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX idx_token_hash_sessions ON sessions(token_hash);
+
 CREATE UNIQUE INDEX one_active_membership_per_user
 ON user_org_membership(user_id)
 WHERE valid_to IS NULL;
+
