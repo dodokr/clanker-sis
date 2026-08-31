@@ -11,6 +11,7 @@ CREATE TABLE users (
 CREATE TABLE organizations (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name varchar(50) NOT NULL,
+    email varchar(255) NOT NULL UNIQUE,
     created_at timestamptz NOT NULL DEFAULT NOW()
 );
 

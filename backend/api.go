@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 	"unicode/utf8"
 	"uuid"
@@ -83,7 +82,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		var user AuthenticatedUser
 		err = s.db.QueryRow(r.Context(), query, tokenHashed).Scan(&user.UserID, &user.OrgID)
 
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, "User could not be authenticated", http.StatusUnauthorized)
 			return
 		} else if err != nil {
@@ -103,7 +102,9 @@ func (s *Server) protected(handler http.HandlerFunc) http.Handler {
 
 func (s *Server) contextGetAuthenticatedUser(r *http.Request) AuthenticatedUser {
 	user, ok := r.Context().Value(userContextKey).(AuthenticatedUser)
-	if !ok { Fatal("missing AuthenticatedUser in context") }
+	if !ok {
+		Fatal("missing AuthenticatedUser in context")
+	}
 	return user
 }
 
@@ -117,8 +118,11 @@ func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	req := struct {
-		Name     string `json:"name"`
-		Email    string `json:"email"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		// TODO: everyone who knows org_email can register under the org.
+		// Change later for invite token.
+		OrgEmail string `json:"org_email"`
 		Password string `json:"password"`
 	}{}
 
@@ -138,6 +142,11 @@ func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.OrgEmail == "" {
+		badRequestEmptyField(w, "OrgEmail")
+		return
+	}
+
 	if req.Password == "" {
 		badRequestEmptyField(w, "Password")
 		return
@@ -153,8 +162,28 @@ func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if utf8.RuneCountInString(req.OrgEmail) > 255 {
+		http.Error(w, "OrgEmail cannot be longer than 255 chars", http.StatusBadRequest)
+		return
+	}
+
 	if utf8.RuneCountInString(req.Password) < 8 {
 		http.Error(w, "Password needs to be at least 8 characters", http.StatusBadRequest)
+		return
+	}
+
+	queryOrgExists := `
+			SELECT id
+			FROM organizations
+			WHERE email = $1
+			`
+	var orgID int64
+	err = s.db.QueryRow(r.Context(), queryOrgExists, req.OrgEmail).Scan(&orgID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "Organization not found", http.StatusNotFound)
+		return
+	} else if err != nil {
+		s.serverError(w, r, "OrgExists query error", err)
 		return
 	}
 
@@ -164,13 +193,20 @@ func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query :=
-		`INSERT INTO users (name, email, password_hash)
-		 VALUES ($1, $2, $3)
-		 RETURNING id`
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		s.serverError(w, r, "Could not begin transaction", err)
+		return
+	}
+	defer tx.Rollback(r.Context()) // safety net — see below
+
+	query := `
+			INSERT INTO users (name, email, password_hash)
+			VALUES ($1, $2, $3)
+			RETURNING id`
 
 	var userID int64
-	err = s.db.QueryRow(r.Context(), query, req.Name, req.Email, passwordHash).Scan(&userID)
+	err = tx.QueryRow(r.Context(), query, req.Name, req.Email, passwordHash).Scan(&userID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation {
@@ -179,6 +215,18 @@ func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.serverError(w, r, "Could not insert user", err)
+		return
+	}
+	queryInsertMember := `
+			INSERT INTO user_org_membership (user_id, org_id, valid_from)
+			VALUES ($1, $2, NOW())`
+
+	if _, err := tx.Exec(r.Context(), queryInsertMember, userID, orgID); err != nil {
+		s.serverError(w, r, "Could not insert membership", err)
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		s.serverError(w, r, "Could not commit registration", err)
 		return
 	}
 
@@ -285,10 +333,6 @@ func documentsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(docs)
 }
 
-func getDocumentPath(storageKey string) string {
-	return filepath.Join("./uploads/", storageKey)
-}
-
 // TODO: User authentication
 func (s *Server) serverError(w http.ResponseWriter, r *http.Request, msg string, err error) {
 	slog.ErrorContext(r.Context(), msg, "method", r.Method, "URL", r.URL.Path, "error", err)
@@ -337,10 +381,10 @@ func (s *Server) uploadDocumentHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("Uploaded File: %s\n", handler.Filename)
 	fmt.Printf("File Size: %d bytes\n", handler.Size)
 
-	storageKey := fmt.Sprintf("uploads/%s%s", uuid.New().String(), handler.Filename)
+	storageKey := fmt.Sprintf("./uploads/%s%s", uuid.New().String(), handler.Filename)
 
 	// First create file, easier to remove if insertDocumentDB fails
-	filePath := getDocumentPath(storageKey)
+	filePath := storageKey
 	dst, err := os.Create(filePath)
 	if err != nil {
 		s.serverError(w, r, "Could not create file in uploadDocumentHandler", err)
