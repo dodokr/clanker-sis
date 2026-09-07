@@ -2,7 +2,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE users (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name varchar(50) NOT NULL,
+    name varchar(60) NOT NULL,
     email varchar(255) NOT NULL UNIQUE,
     password_hash text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT NOW()
@@ -10,7 +10,7 @@ CREATE TABLE users (
 
 CREATE TABLE organizations (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name varchar(50) NOT NULL,
+    name varchar(60) NOT NULL,
     email varchar(255) NOT NULL UNIQUE,
     created_at timestamptz NOT NULL DEFAULT NOW()
 );
@@ -21,7 +21,7 @@ CREATE TABLE user_org_membership (
     org_id bigint NOT NULL REFERENCES organizations(id),
     valid_from timestamptz NOT NULL,
     valid_to timestamptz,
-    created_at timestamptz NOT NULL DEFAULT NOW()
+    created_at timestamptz NOT NULL DEFAULT NOW(),
 
     CONSTRAINT membership_valid_dates
         CHECK (valid_to IS NULL OR valid_from < valid_to)
